@@ -27,6 +27,7 @@ CLIENT_ID = re.compile(r"[A-Za-z0-9_.-]{1,100}\Z")
 CODE = re.compile(r"[A-Za-z0-9_-]{8,200}\Z")
 KEY_NAME = "github-app.pem"
 METADATA_NAME = "github-app.json"
+PENDING_NAME = ".github-app-pending"
 
 
 class SetupError(Exception):
@@ -76,14 +77,14 @@ def owner_directory(path, create=False):
     return path.resolve()
 
 
-def private_read(path):
+def private_read(path, max_bytes=65536):
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, "rb") as stream:
         details = os.fstat(stream.fileno())
         if not stat.S_ISREG(details.st_mode) or details.st_uid != os.getuid() or details.st_mode & 0o077:
             raise SetupError("GitHub App credentials must use owner-only regular files (0600)")
-        data = stream.read(65537)
-    if len(data) > 65536:
+        data = stream.read(max_bytes + 1)
+    if len(data) > max_bytes:
         raise SetupError("GitHub App credential file is too large")
     return data
 
@@ -101,13 +102,13 @@ def publish_private(path, data):
         os.unlink(temp)
 
 
-def save_registration(root, organization, response):
+def registration_values(organization, response):
     if not isinstance(response, dict):
         raise SetupError("GitHub returned invalid App metadata")
     slug, client_id, app_id = (response.get(k) for k in ("slug", "client_id", "id"))
     owner, key = response.get("owner"), response.get("pem")
     if not (
-        isinstance(owner, dict) and str(owner.get("login")).lower() == organization.lower()
+        isinstance(owner, dict) and isinstance(owner.get("login"), str) and owner["login"].lower() == organization.lower()
         and isinstance(slug, str) and SLUG.fullmatch(slug)
         and isinstance(client_id, str) and CLIENT_ID.fullmatch(client_id)
         and type(app_id) is int and app_id > 0
@@ -115,12 +116,39 @@ def save_registration(root, organization, response):
         and len(key) <= 65536
     ):
         raise SetupError("GitHub returned an incomplete App registration or a different owner")
-    # GitHub also returns client and webhook secrets. The coordinator uses
-    # neither, so persist only the signing key and installation lookup metadata.
-    publish_private(root / KEY_NAME, key.encode("ascii"))
     metadata = {"slug": slug, "client_id": client_id, "app_id": app_id, "organization": organization}
-    publish_private(root / METADATA_NAME, (json.dumps(metadata, indent=2) + "\n").encode())
+    return key.encode("ascii"), metadata
+
+
+def finish_registration(root, organization):
+    pending = root / PENDING_NAME
+    # JSON escapes each ASCII key byte to at most six bytes.
+    response = json.loads(private_read(pending, 6 * 65536 + 1024))
+    key, metadata = registration_values(organization, response)
+    metadata["organization"] = response["owner"]["login"]
+    files = {root / KEY_NAME: key, root / METADATA_NAME: (json.dumps(metadata, indent=2) + "\n").encode()}
+    missing = []
+    for path, data in files.items():
+        try:
+            if private_read(path) != data:
+                raise SetupError("Saved App credentials do not match the pending registration")
+        except FileNotFoundError:
+            missing.append(path)
+    for path in missing:
+        publish_private(path, files[path])
+    pending.unlink()
     return metadata
+
+
+def save_registration(root, organization, response):
+    key, metadata = registration_values(organization, response)
+    for filename in (KEY_NAME, METADATA_NAME):
+        if os.path.lexists(root / filename):
+            raise FileExistsError(filename)
+    pending = {"slug": metadata["slug"], "client_id": metadata["client_id"], "id": metadata["app_id"],
+               "owner": {"login": organization}, "pem": key.decode("ascii")}
+    publish_private(root / PENDING_NAME, json.dumps(pending).encode())
+    return finish_registration(root, organization)
 
 
 class RegistrationServer(HTTPServer):
@@ -271,6 +299,9 @@ def register(args):
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise SetupError("Registration is active in this output directory") from None
+        if os.path.lexists(root / PENDING_NAME):
+            print_registration(root, finish_registration(root, args.organization))
+            return
         existing = [os.path.lexists(root / filename) for filename in (KEY_NAME, METADATA_NAME)]
         if all(existing):
             print_registration(root, registration_metadata(root, args.organization))

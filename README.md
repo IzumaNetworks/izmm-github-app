@@ -23,8 +23,11 @@ python3 setup.py list
 The helper stores the signing key and App metadata in
 `$XDG_CONFIG_HOME/izmachine/github-app`, or `~/.config/izmachine/github-app`
 when the variable is unset. Keep the signing key in secret storage controlled by
-your organization. Run the same registration command to retrieve the
-installation link using your saved App metadata.
+your organization. Run the same registration command to finish an interrupted
+local save or retrieve the installation link. If GitHub creates the App before
+the helper saves the registration, open the existing App's settings to recover
+access.
+[Manage GitHub App private keys](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/managing-private-keys-for-github-apps)
 
 In GitHub, select an organization runner group that grants access to your
 workflow repositories. On a workstation with `izmm-daemon` installed, find or
