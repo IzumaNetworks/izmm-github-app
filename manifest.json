@@ -1,0 +1,15 @@
+{
+  "name": "izmm-runner-coordinator",
+  "url": "https://github.com/IzumaNetworks/izmm-github-app",
+  "description": "Runs an authorized Izuma Metal Manager GitHub Actions runner scale set.",
+  "public": false,
+  "hook_attributes": {
+    "url": "https://github.com/IzumaNetworks/izmm-github-app",
+    "active": false
+  },
+  "default_permissions": {
+    "metadata": "read",
+    "organization_self_hosted_runners": "write"
+  },
+  "default_events": []
+}
