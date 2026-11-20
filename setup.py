@@ -3,6 +3,7 @@
 
 import argparse
 import base64
+import fcntl
 import html
 import json
 import os
@@ -261,9 +262,15 @@ def register(args):
         raise SetupError("Store the GitHub App credentials outside Git checkouts")
     root = owner_directory(args.output_dir, create=True)
     guard = root / ".register.lock"
-    fd = os.open(guard, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    os.close(fd)
+    fd = os.open(guard, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
     try:
+        details = os.fstat(fd)
+        if not stat.S_ISREG(details.st_mode) or details.st_uid != os.getuid() or details.st_mode & 0o077:
+            raise SetupError("The registration lock must be an owner-only regular file (0600)")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise SetupError("Registration is active in this output directory") from None
         existing = [os.path.lexists(root / filename) for filename in (KEY_NAME, METADATA_NAME)]
         if all(existing):
             print_registration(root, registration_metadata(root, args.organization))
@@ -284,7 +291,7 @@ def register(args):
                 raise SetupError("GitHub App registration expired")
             print_registration(root, server.metadata)
     finally:
-        guard.unlink()
+        os.close(fd)
 
 
 def b64url(content):
